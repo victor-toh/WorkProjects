@@ -1,0 +1,348 @@
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Collections.Specialized;
+using System.Data;
+using System.Data.SqlClient;
+using System.IO;
+using System.Globalization;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading.Tasks;
+using System.Data.OleDb;
+using SourceCode.Data.SmartObjectsClient;
+using SourceCode.Hosting.Client.BaseAPI;
+using SourceCode.SmartObjects.Client;
+
+namespace MND.K2.Solution.PUBBS_ReadJournalFile
+{
+    public class Read_From_Excel
+    {
+        //Initialize Log File, Journal Folder Path, Archive Folder Path
+        string LogFileName = string.Format("log file-{0:yyyy-MM-dd_hh-mm-ss-tt}.txt", DateTime.Now);
+        string dirPath = ConfigurationManager.AppSettings.Get("journalFolder");
+        string archivePath = ConfigurationManager.AppSettings.Get("archiveFolder");
+
+        static void Main(string[] args)
+        {
+            Read_From_Excel rfe = new Read_From_Excel();
+
+            //Check if report file exists in the folder
+            Console.WriteLine("Directory path of excel file: " + rfe.dirPath);
+            string[] files = System.IO.Directory.GetFiles(rfe.dirPath, "*.xlsx");
+            if (files.Length == 0)
+            {
+                Console.WriteLine("File not found.");
+                File.WriteAllText(rfe.LogFileName, "Missing file in folder" + Environment.NewLine);
+                Console.ReadKey();
+                Environment.Exit(0);
+            }
+
+            //Run program on specified excel path
+            string[] paths = Directory.GetFiles(rfe.dirPath, "*.xlsx");
+
+            foreach (String path in paths)
+            {
+                string fileNamewithExtension = System.IO.Path.GetFileName(path);
+                string destinationPath = System.IO.Path.Combine(rfe.archivePath, fileNamewithExtension);
+                int tablerows = rfe.ReadExcel(path).Rows.Count;
+                int tablecols = rfe.ReadExcel(path).Columns.Count;
+                Console.WriteLine("Excel file " + path + " has " + tablerows + " record(s).");
+
+                int rowno = 0;
+                int counter = 1;
+                DateTime myDateTime = DateTime.Now;
+                string sqlTimeNow = myDateTime.ToString("yyyy/MM/dd HH:mm:ss");
+                //int referenceNumberID = 1;
+
+                try
+                {
+                    // Connect to SQL Server
+                    String connectionString = ConfigurationManager.AppSettings.Get("SQLConnectionString");
+                    using (SqlConnection conn = new SqlConnection(connectionString))
+                    {
+                        conn.Open();
+                        Console.WriteLine("Connected to SQL Server.");
+
+                        //Get Count from ReferenceNumberByFinancialYearByModule Table
+                        SqlCommand getCount = new SqlCommand("select Count from [MND_CorporateCases].[dbo].[PUBBS_ReferenceNumberByFinancialYear]", conn);
+                        int referenceNumberID = (int)getCount.ExecuteScalar() + 1;
+
+                        Console.WriteLine("*** Uploading Data ... ***");
+                        File.WriteAllText(rfe.LogFileName, "Log Entry" + Environment.NewLine);
+
+                        {
+                            foreach (DataRow row in rfe.ReadExcel(path).Rows)
+                            {
+
+                                String refNo = string.Format("PUBBS{0}{1}{2}", myDateTime.Year, myDateTime.Month.ToString("d2"), referenceNumberID.ToString().PadLeft(5, '0'));    //This is K2 ref no. in format PUBBSyyyymmID
+                                String journalID = rfe.ReadExcel(path).Rows[rowno][0].ToString();
+                                String journalLongDescription = rfe.ReadExcel(path).Rows[rowno][1].ToString();
+                                String journalSource = rfe.ReadExcel(path).Rows[rowno][2].ToString();
+                                String journalLine = rfe.ReadExcel(path).Rows[rowno][3].ToString();
+                                String journalLineDescription = rfe.ReadExcel(path).Rows[rowno][4].ToString();
+                                String PUBBSID = rfe.ReadExcel(path).Rows[rowno][5].ToString();
+                                String billAccount = rfe.ReadExcel(path).Rows[rowno][6].ToString();
+                                String journalAccountingDate = rfe.ReadExcel(path).Rows[rowno][7].ToString();
+                                //DateTime journalAccountingDateConverted = DateTime.ParseExact(journalAccountingDate, "yyyy-MM-dd", null);
+                                String accountingPeriod = rfe.ReadExcel(path).Rows[rowno][8].ToString();
+                                String costCentre = rfe.ReadExcel(path).Rows[rowno][9].ToString();
+                                String accountCode = rfe.ReadExcel(path).Rows[rowno][10].ToString();
+                                String subAccount = rfe.ReadExcel(path).Rows[rowno][11].ToString();
+                                String journalLineAmount = rfe.ReadExcel(path).Rows[rowno][12].ToString();
+
+                                String logFiletext = journalID + " , " + journalLongDescription + " , " + journalSource + " , " + journalLine + " , " + journalLineDescription + " , " + PUBBSID + " , " + billAccount + " , " + journalAccountingDate + " , " + accountingPeriod + " , " + costCentre + " , " + accountCode + " , " + subAccount + " , " + journalLineAmount;
+                                String query = @"Insert into [MND_CorporateCases].[dbo].[PUBBS_Requests] values ('" + refNo + "', '" + journalID + "','" + journalLongDescription + "','" + journalSource + "','" + journalLine + "','" + journalLineDescription + "','"
+                                    + PUBBSID + "','" + billAccount + "','" + journalAccountingDate + "','" + accountingPeriod + "','" + costCentre + "','" + accountCode + "','" + subAccount + "','" + journalLineAmount.Replace("$", "").Replace(",", "") +
+                                    "','Admin','" + sqlTimeNow + "','Admin','" + sqlTimeNow + "', 1, 15)";
+                                //Console.WriteLine(query);
+
+                                try
+                                {
+
+                                    if (rfe.ReadExcel(path).Rows[rowno][0].ToString().Length == 0)          //if journalId is empty
+                                    {
+                                        throw new Exception("Record entry has either missing Journal ID or PUBBS ID.");
+                                    }
+                                    if (rfe.ReadExcel(path).Rows[rowno][5].ToString().Length == 0)           //if PUBBSID is empty
+                                    {
+                                        throw new Exception("Record entry has either missing Journal ID or PUBBS ID.");
+                                    }
+
+                                    SqlCommand cmd = new SqlCommand();
+                                    cmd.Connection = conn;
+                                    cmd.CommandText = query;
+                                    cmd.CommandType = CommandType.Text;
+                                    //cmd.ExecuteNonQuery(); //Udaya: output of this method is requestid
+                                    int requestid = cmd.ExecuteNonQuery();
+                                    string currentTime = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss");
+                                    File.AppendAllText(rfe.LogFileName, currentTime + " Inserted Record: " + logFiletext + Environment.NewLine);
+                                    Console.WriteLine("Inserted " + counter + " out of " + tablerows + " record(s).");
+                                   
+                                    //after inserting the data, we need to check the attachment folder
+                                    rfe.readAttachmentFolder(requestid, PUBBSID);
+
+                                    rowno += 1;
+                                    counter += 1;
+                                    referenceNumberID += 1;
+                                }
+
+                                catch (Exception sqlError)
+                                {
+                                    Console.WriteLine(sqlError.Message);
+                                    rowno += 1;
+                                    File.AppendAllText(rfe.LogFileName, sqlError.Message + Environment.NewLine);
+                                }
+                            }
+
+                            if (rowno == tablerows)
+                            {
+
+                                Console.WriteLine("*** Data Upload Completed ***");
+                                //update the Count
+                                referenceNumberID = referenceNumberID - 1;
+                                SqlCommand updateCount = new SqlCommand(@"update [MND_CorporateCases].[dbo].[PUBBS_ReferenceNumberByFinancialYear] set Count =" + referenceNumberID, conn);
+                                updateCount.ExecuteNonQuery();
+
+                                //Close connection
+                                conn.Close();
+                                File.AppendAllText(rfe.LogFileName, "End of Record Upload to Database" + Environment.NewLine);
+
+                                //After Batch job finished reading all the journal line entries, need to push into the archive folder
+                                System.IO.File.Move(path, destinationPath);
+
+
+                                Console.WriteLine("Press any key to exit.");
+                                Console.ReadKey();
+                            }
+                        }
+                    }
+                }
+
+                catch (Exception ex)
+                {
+                    Console.WriteLine(" \n**************************** Error - " + ex.Message);
+                    File.AppendAllText(rfe.LogFileName, ex.Message + Environment.NewLine);
+                }
+                Console.ReadLine();
+
+            }
+
+
+        }
+
+        public void readAttachmentFolder(int requestId, string PUBBSID)                     //Udaya: 2 input parameters -- requestId, pubbsId
+        {
+            string attachmentPath = ConfigurationManager.AppSettings.Get("attachmentFolder");
+            string archivePath = ConfigurationManager.AppSettings.Get("archiveFolder");
+            string[] fileAttachments = Directory.GetFiles(attachmentPath); 
+            //udaya Get only those file contain the pubbsId
+            List<string> fileAttachmentsthatContainPUBBSID = new List<string>();
+
+            foreach (string file in fileAttachments)
+            {
+                if (file.Contains(PUBBSID))
+                {
+                    fileAttachmentsthatContainPUBBSID.Add(file);
+                }
+            }
+
+
+            Console.WriteLine("Reading " + fileAttachmentsthatContainPUBBSID.Count + " documents in Attachment folder into K2 database...");
+
+            if (fileAttachmentsthatContainPUBBSID.Count == 0)
+            {
+                File.AppendAllText(LogFileName, "No attachments found." + Environment.NewLine);
+            }
+
+            //TODO: use the SCConnectionStringBuilder class to create a connection string to K2
+
+            //Make a connection under the currently Windows Identity that is running this code
+            SourceCode.Hosting.Client.BaseAPI.SCConnectionStringBuilder builder = new SCConnectionStringBuilder();
+            builder.Authenticate = true; //whether to authenticate the user's credentials against the security provider, usually true
+            builder.Host = "DLX"; //name of the K2 host server, or the name of the DNS entry pointing to the K2 Farm
+            builder.Port = 5555; //use port 5252 for SourceCode.Workflow.Client connections, port 5555 for everything else
+            builder.Integrated = true; //true = use the logged on user, false = use the specified user
+            builder.IsPrimaryLogin = true; //true = re-authenticate user, false = use cached security credentials
+            builder.SecurityLabelName = "K2"; //the name of the security label to use for authentication
+
+            //Using the connection string
+
+            //SourceCode.SmartObjects.Client
+
+            string _connectionstring = "[K2environmentConnectionString]";
+
+            // open a K2 Server connection
+            SourceCode.SmartObjects.Client.SmartObjectClientServer serverName = new SmartObjectClientServer();
+            serverName.CreateConnection();
+            serverName.Connection.Open(builder.ConnectionString);
+
+
+            foreach (string file in fileAttachmentsthatContainPUBBSID)
+            {
+                String fileName = Path.GetFileName(file);
+                String filenamewoExtension = Path.GetFileNameWithoutExtension(file);
+                String fileExtension = Path.GetExtension(file);
+
+                //String fullPath = Path.Combine(attachmentPath, fileName);
+                string fullPath = string.Format(@"C:\Users\Administrator\Documents\PUBBS\Attachment\{0}", fileName);
+                Console.WriteLine("Inserting SmartObject " + fullPath);
+
+                try
+                {
+                    // get an object representing the "Attachments" SmartObject definition and one for the "File" property
+                    SmartObject smartObject = serverName.GetSmartObject("dbo_PUBBS_Attachments");
+                    SmartFileProperty smartFile = (SmartFileProperty)smartObject.Properties["FileContent"];
+
+                    // specify which SmartObject method will be called.
+                    smartObject.MethodToExecute = "Create";
+
+                    //TODO: read in the file you want to add.
+                    //in this example we're loading a file called SampleDocument.txt from the file system
+                    //Check if the file exists at the location.
+                    byte[] _fileContent = null;
+                    if (File.Exists(fullPath))
+                    {
+                        //read file contents into a Byte Array
+                        _fileContent = File.ReadAllBytes(@"C:\Users\Administrator\Documents\PUBBS\Attachment\test1.txt");
+
+                    }
+
+                    //convert the file to base64 before uploading, and set the SmartFile properties
+                    smartFile.Content = System.Convert.ToBase64String(_fileContent, 0, _fileContent.Length, Base64FormattingOptions.None);
+                    smartFile.FileName = fileName;
+
+                    // set other SmartObject properties as needed
+                    smartObject.Properties["RequestId"].Value = requestId.ToString(); //Udaya: assing here requestId
+                    smartObject.Properties["FileName"].Value = fileName;
+                    smartObject.Properties["FileType"].Value = " ";
+                    smartObject.Properties["Type"].Value = "PUBBS Support Document";
+                    smartObject.Properties["IsActive"].Value = "Yes";
+                    smartObject.Properties["CreatedBy"].Value = "Admin";
+                    smartObject.Properties["CreatedOn"].Value = DateTime.Now.ToString();
+                    smartObject.Properties["ModifiedBy"].Value = "Admin";
+                    smartObject.Properties["ModifiedOn"].Value = DateTime.Now.ToString();
+                    // execute the SmartObject method
+                    serverName.ExecuteScalar(smartObject);
+                }
+                catch
+                {
+                    // do something with the exception
+					File.AppendAllText(LogFileName, "Exception Occured." + Environment.NewLine);
+                }
+                finally
+                {
+                    // close the connection
+                    serverName.Connection.Close();
+                }
+
+
+                //Move to archive Folder
+                String newFileName = filenamewoExtension + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + fileExtension;
+                String destinationPathofFileName = System.IO.Path.Combine(archivePath, newFileName);
+                System.IO.File.Move(file, destinationPathofFileName);
+                File.AppendAllText(LogFileName, "Moved " + file + " from Attachments folder to Archive Folder." + Environment.NewLine);
+            }
+
+
+        }
+
+        public DataTable ReadExcel(string path)
+        {
+
+            OleDbConnectionStringBuilder connectionStringBuilder = new OleDbConnectionStringBuilder();
+            connectionStringBuilder.Provider = "Microsoft.ACE.OLEDB.12.0";
+            connectionStringBuilder.DataSource = path;
+            connectionStringBuilder.Add("Mode", "Read");
+
+            const string extendedProperties = "Excel 12.0;IMEX=1;HDR=NO";                 //Set Header to No since we expect the excel File to be dynamic and not have headers as the first row.
+            connectionStringBuilder.Add("Extended Properties", extendedProperties);
+
+            String connectionString = connectionStringBuilder.ToString();
+            // Create connection object by using the preceding connection string.
+
+            DataTable records_dt = new DataTable();                                     //Initialize datatable for the records data
+            DataTable full_dt = new DataTable();                                //Initialize datatable for the full excel file
+            using (var objConn = new OleDbConnection(connectionString))
+            {
+                objConn.Open();
+
+                // Get the data table contaning the schema guid.
+                DataTable excelSheetsDataTable = objConn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+                if (excelSheetsDataTable == null)
+                    return null;
+
+                // get all the worksheet names
+                List<String> excelSheets = (from DataRow row in excelSheetsDataTable.Rows select row["TABLE_NAME"].ToString()).ToList();
+
+
+                using (OleDbCommand comm = new OleDbCommand())
+                {
+                    comm.CommandText = "Select * from [" + excelSheets[0] + "]";
+                    comm.Connection = objConn;
+                    using (OleDbDataAdapter da = new OleDbDataAdapter())
+                    {
+                        da.SelectCommand = comm;
+                        da.Fill(full_dt);
+                    }
+                }
+
+                //Take a subset of the full excel datatable since we only want the records under the Headers
+                using (OleDbCommand comm2 = new OleDbCommand())
+                {
+                    DataRow[] rows = full_dt.Select("F1 = 'Journal ID'");                            //Look for Header Journal ID and take data below it            
+                    int startNo = full_dt.Rows.IndexOf(rows[0]) + 2;                             //specify the excel reference to start taking data, it should add 2 given index starts from 0 
+                    comm2.CommandText = "Select * from [" + excelSheets[0] + "A" + startNo + ":M]";
+                    comm2.Connection = objConn;
+                    using (OleDbDataAdapter da = new OleDbDataAdapter())
+                    {
+                        da.SelectCommand = comm2;
+                        da.Fill(records_dt);
+                        return records_dt;
+                    }
+                }
+            }
+        }
+    }
+}
